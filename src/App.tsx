@@ -1,24 +1,24 @@
 import { useCallback, useState } from "preact/hooks";
 import css from "./App.module.scss";
-import { decrypt, encrypt } from "./utils/encyption";
-import { base64ToBuffer, bufferToBase64, bufferToText, textToBuffer } from "./utils/convertions";
+import { EncryptionKey } from "./utils/encryption";
+import { base64ToBuffer, bufferToBase64, bufferToText, textToBuffer } from "./utils/buffers";
 import { compress, uncompress } from "./utils/compression";
 import CodeMirrorEditor from "./components/CodeMirrorEditor";
 import useE2E from "./hooks/useE2E";
 
 export default function App() {
-	const { pubKey, otherKeys, encKey, reset, exchange, addOtherKey } = useE2E();
+	const { exchangeKey, encKey, otherKeys, reset, exchange, addOtherKey, setEncKey } = useE2E();
 	const [input, setInput] = useState({ text: "", isExternal: false });
 
 	const handleInputCopy = useCallback(async () => {
-		await navigator.clipboard.writeText(bufferToBase64(await encrypt(await compress(textToBuffer(input.text)), encKey!)));
+		await navigator.clipboard.writeText(bufferToBase64(await encKey!.encrypt(await compress(textToBuffer(input.text)))));
 	}, [encKey, input.text]);
 
 	const handleInputPaste = useCallback(async () => {
 		const encryptedText = (await navigator.clipboard.readText()).trim();
 		try {
 			setInput({
-				text: bufferToText(await uncompress(await decrypt(base64ToBuffer(encryptedText), encKey!))),
+				text: bufferToText(await uncompress(await encKey!.decrypt(base64ToBuffer(encryptedText)))),
 				isExternal: true,
 			});
 		} catch {
@@ -43,28 +43,39 @@ export default function App() {
 		}
 	}, [exchange, otherKeys.length]);
 
-	const handleOtherKey = useCallback(async () => {
+	const handleSetEncKey = useCallback(async () => {
 		try {
-			await addOtherKey((await navigator.clipboard.readText()).trim());
+			const input = (await navigator.clipboard.readText()).trim();
+			setEncKey(await EncryptionKey.fromBuffer(base64ToBuffer(input)));
 		} catch (e) {
 			alert((e as Error).message);
 		}
-	}, [addOtherKey]);
+	}, [setEncKey]);
+
+	const handleOtherKey = useCallback(async () => {
+		try {
+			await addOtherKey((await navigator.clipboard.readText()).trim());
+			await navigator.clipboard.writeText(exchangeKey!.toString());
+		} catch (e) {
+			alert((e as Error).message);
+		}
+	}, [addOtherKey, exchangeKey]);
 
 	return (
 		<main>
 			<nav>
-				{!encKey && pubKey && (
+				{!encKey && exchangeKey && (
 					<>
-						<button onClick={() => navigator.clipboard.writeText(pubKey.str)}>Copy pub key</button>
+						<button onClick={() => navigator.clipboard.writeText(exchangeKey.toString())}>Copy pub key</button>
 						<button onClick={handleOtherKey}>Add key ({otherKeys.length})</button>
-						<button onClick={handleExchange}>{otherKeys.length > 0 ? "Done" : "Paste pub/enc key"}</button>
+						<button onClick={handleSetEncKey}>Paste enc key</button>
+						<button onClick={handleExchange}>{otherKeys.length > 0 ? "Done" : "Paste pub key"}</button>
 					</>
 				)}
 				{encKey && (
 					<>
 						<button onClick={handleReset}>Reset</button>
-						<button onClick={() => navigator.clipboard.writeText(encKey.str)}>Copy enc key</button>
+						<button onClick={() => navigator.clipboard.writeText(encKey.toString())}>Copy enc key</button>
 						<span> </span>
 						<button onClick={handleInputCopy}>Copy message</button>
 						<button onClick={handleInputPaste}>Paste message</button>

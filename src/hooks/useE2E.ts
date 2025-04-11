@@ -1,71 +1,68 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { CachedCryptoKey, CachedCryptoKeyPair, decrypt, deriveKey, encrypt, generateKeyPair, importKey, randomKey } from "../utils/encyption";
-import { base64ToBuffer, bufferToBase64 } from "../utils/convertions";
-
-const ENC_KEY_REGEX = /^[a-zA-Z0-9=+/-]{44}$/;
-const PUB_KEY_REGEX = /^[a-zA-Z0-9=+/-]{88}$/;
-const MUL_KEY_REGEX = /^[a-zA-Z0-9=+/-]{88}(:?\|[a-zA-Z0-9=+/-]{80})+$/;
+import { base64ToBuffer, bufferToBase64, compareBuffers, concatBuffers } from "../utils/buffers";
+import { ECDHTypes, ECDHExchangeKey } from "../utils/exchange";
+import { ENCAPSULED_KEY_LEN, EncryptionKey } from "../utils/encryption";
 
 export default function useE2E() {
-	const [keyPair, setKeyPair] = useState<CachedCryptoKeyPair>();
-	const [otherKeys, setOtherKeys] = useState<CachedCryptoKey[]>([]);
-	const [encKey, setEncKey] = useState<CachedCryptoKey>();
+	const [exchangeKey, setExchangeKey] = useState<ECDHExchangeKey>();
+	const [otherKeys, setOtherKeys] = useState<Uint8Array[]>([]);
+	const [encKey, setEncKey] = useState<EncryptionKey>();
 
 	const reset = useCallback(async () => {
-		setKeyPair(undefined);
+		setExchangeKey(undefined);
 		setEncKey(undefined);
 		setOtherKeys([]);
-		setKeyPair(await generateKeyPair());
+		setExchangeKey(await ECDHExchangeKey.new(ECDHTypes.X25519));
 	}, []);
 
 	const addOtherKey = useCallback(
-		async (str: string) => {
-			if (!keyPair) throw new Error("No key pair");
-			if (!PUB_KEY_REGEX.test(str)) {
+		async (inputStr: string) => {
+			if (!exchangeKey) throw new Error("No exchange key");
+			const input = base64ToBuffer(inputStr);
+			if (input.length !== exchangeKey.type.pkLen) {
 				throw new Error("Unrecognised input");
 			}
-			if (str === keyPair.publicKey.str) {
+			if (compareBuffers(input, exchangeKey.publicKey)) {
 				throw new Error("You can't use your own public key");
 			}
-			if (otherKeys.find((key) => key.str === str)) {
+			if (otherKeys.find((key) => compareBuffers(input, key))) {
 				throw new Error("The key is already in the list");
 			}
-			setOtherKeys([...otherKeys, await importKey(str, "Public")]);
+			setOtherKeys([...otherKeys, input]);
 		},
-		[keyPair, otherKeys],
+		[exchangeKey, otherKeys],
 	);
 
 	const exchange = useCallback(
-		async (str?: string) => {
-			if (!keyPair) throw new Error("No key pair");
-			if (!str) {
+		async (inputStr?: string) => {
+			if (!exchangeKey) throw new Error("No exchange key");
+			const input = base64ToBuffer(inputStr ?? "");
+			if (input.length === 0) {
 				// Exchange between multiple people as the host.
 				if (otherKeys.length === 0) throw new Error("Can't multi exchange as host without public keys");
-				const [key, keyBuf] = await randomKey();
-				const finalData = [keyPair.publicKey.str];
+				const key = await EncryptionKey.random();
+				const finalData = [exchangeKey.publicKey];
 				for (const otherKey of otherKeys) {
-					const sharedKey = await deriveKey(keyPair.privateKey, otherKey);
-					finalData.push(bufferToBase64(await encrypt(keyBuf, sharedKey)));
+					const encapsuledKey = await (await exchangeKey.derive(otherKey)).encrypt(key.buffer);
+					finalData.push(encapsuledKey);
 				}
 				setEncKey(key);
-				return finalData.join("|");
-			} else if (ENC_KEY_REGEX.test(str)) {
-				// Use an existing encryption key instead of exchange
-				setEncKey(await importKey(str, "Crypt"));
-			} else if (PUB_KEY_REGEX.test(str)) {
+				return bufferToBase64(concatBuffers(...finalData));
+			} else if (input.length === exchangeKey.type.pkLen) {
 				// Exchange between 2 people
-				if (str === keyPair.publicKey.str) {
+				if (compareBuffers(input, exchangeKey.publicKey)) {
 					throw new Error("You can't use your own public key");
 				}
-				setEncKey(await deriveKey(keyPair.privateKey, await importKey(str, "Public")));
-			} else if (MUL_KEY_REGEX.test(str)) {
+				setEncKey(await exchangeKey.derive(input));
+			} else if ((input.length - exchangeKey.type.pkLen) % ENCAPSULED_KEY_LEN === 0) {
 				// Exchange between more than two people with keys provided by host.
-				const keys = str.split("|");
-				const hostPubKey = await importKey(keys.splice(0, 1)[0], "Public");
-				const sharedKey = await deriveKey(keyPair.privateKey, hostPubKey);
-				for (const key of keys) {
+				const hostPubKey = input.subarray(0, exchangeKey.type.pkLen);
+				const sharedKey = await exchangeKey.derive(hostPubKey);
+				const keyList = input.subarray(exchangeKey.type.pkLen);
+				for (let i = 0; i < keyList.length; i += ENCAPSULED_KEY_LEN) {
+					const key = keyList.subarray(i, i + ENCAPSULED_KEY_LEN);
 					try {
-						return setEncKey(await importKey(await decrypt(base64ToBuffer(key), sharedKey), "Crypt"));
+						return setEncKey(await EncryptionKey.fromBuffer(await sharedKey.decrypt(key)));
 					} catch {}
 				}
 				throw new Error("Failed to multi exchange");
@@ -73,12 +70,12 @@ export default function useE2E() {
 				throw new Error("Unrecognised input");
 			}
 		},
-		[keyPair, otherKeys],
+		[exchangeKey, otherKeys],
 	);
 
 	useEffect(() => {
-		generateKeyPair().then(setKeyPair);
+		ECDHExchangeKey.new(ECDHTypes.X25519).then(setExchangeKey);
 	}, []);
 
-	return { pubKey: keyPair?.publicKey, otherKeys, encKey, exchange, reset, addOtherKey };
+	return { exchangeKey, encKey, otherKeys, exchange, reset, addOtherKey, setEncKey };
 }

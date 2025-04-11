@@ -11,10 +11,10 @@ async function _uncompress(buffer: Uint8Array, format: CompressionFormat) {
 async function compress(buffer: Uint8Array) {
 	const deflateBuffer = await _compress(buffer, "deflate");
 	const gzipBuffer = await _compress(buffer, "gzip");
-	if (buffer.byteLength <= deflateBuffer.byteLength && buffer.byteLength <= gzipBuffer.byteLength) {
+	if (buffer.length <= deflateBuffer.length && buffer.length <= gzipBuffer.length) {
 		return buffer;
 	}
-	if (deflateBuffer.byteLength <= buffer.byteLength && deflateBuffer.byteLength <= gzipBuffer.byteLength) {
+	if (deflateBuffer.length <= buffer.length && deflateBuffer.length <= gzipBuffer.length) {
 		return deflateBuffer;
 	}
 	return gzipBuffer;
